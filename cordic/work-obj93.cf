@@ -1,0 +1,7 @@
+v 4
+file . "cordic_tb.vhd" "97169c4c7379baa423deaaabd433b0ef940b8494" "20260913090306.700":
+  entity cordic_tb at 1( 0) + 0 on 13;
+  architecture sim of cordic_tb at 9( 158) + 0 on 14;
+file . "cordic.vhd" "6459ff5585199729dc22f3e54922fbbc09e459eb" "20260913090304.589":
+  entity cordic at 1( 0) + 0 on 11;
+  architecture rtl of cordic at 24( 573) + 0 on 12;
