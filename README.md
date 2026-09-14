@@ -13,7 +13,7 @@ A robot's control loop runs on a strict schedule, but the math behind it — tri
 ## Repository structure
 
 ```
-ros2-fpga/
+KineRTL/
 ├── common/                      -- shared, robot-agnostic building blocks
 │   ├── fixed_point_pkg.vhd      -- Qx.y fixed-point types and constants
 │   ├── cordic/
@@ -22,8 +22,6 @@ ros2-fpga/
 │   │   └── cordic_sqrt.vhd      -- (planned) square-root core
 │   └── matrix_ops/
 │       ├── mult_m.vhd           -- 4x4 fixed-point matrix multiplier
-│       ├── mat_transpose.vhd    -- (planned)
-│       └── mat_inverse.vhd      -- (planned, needed for numerical IK / Jacobians)
 │
 ├── kinematics/
 │   ├── forward/                 -- direct kinematics (IMPLEMENTED)
