@@ -149,9 +149,10 @@ begin
                     abs_err_total <= abs_x + abs_y + abs_z;
 
                     for i in 0 to DOF-1 loop
-                        jacobian(0, i) <= shift_right(t_mat_pert(i)(0,3)(TOTAL_WIDTH-1 downto 0) - t_mat_real(0,3)(TOTAL_WIDTH-1 downto 0), 5);
-                        jacobian(1, i) <= shift_right(t_mat_pert(i)(1,3)(TOTAL_WIDTH-1 downto 0) - t_mat_real(1,3)(TOTAL_WIDTH-1 downto 0), 5);
-                        jacobian(2, i) <= shift_right(t_mat_pert(i)(2,3)(TOTAL_WIDTH-1 downto 0) - t_mat_real(2,3)(TOTAL_WIDTH-1 downto 0), 5);
+                        -- Al dividir por un delta de 2^-5, multiplicamos la diferencia por 2^5 (shift_left)
+                        jacobian(0, i) <= shift_left(t_mat_pert(i)(0,3)(TOTAL_WIDTH-1 downto 0) - t_mat_real(0,3)(TOTAL_WIDTH-1 downto 0), 5);
+                        jacobian(1, i) <= shift_left(t_mat_pert(i)(1,3)(TOTAL_WIDTH-1 downto 0) - t_mat_real(1,3)(TOTAL_WIDTH-1 downto 0), 5);
+                        jacobian(2, i) <= shift_left(t_mat_pert(i)(2,3)(TOTAL_WIDTH-1 downto 0) - t_mat_real(2,3)(TOTAL_WIDTH-1 downto 0), 5);
                     end loop;
                     
                     state <= THETA_NEXT;
@@ -163,7 +164,7 @@ begin
                         for i in 0 to DOF-1 loop
                             accum_theta := (jacobian(0, i) * err_x) + (jacobian(1, i) * err_y) + (jacobian(2, i) * err_z);
                             -- Factor de convergencia: Ajusta este 5 si diverge o es muy lento (4 a 7 es óptimo)
-                            theta_curr(i) <= theta_curr(i) + resize(shift_right(accum_theta, FRAC_WIDTH + 5), TOTAL_WIDTH);
+                            theta_curr(i) <= theta_curr(i) + resize(shift_right(accum_theta, FRAC_WIDTH + 1), TOTAL_WIDTH);
                         end loop;
                         
                         iter_count    <= iter_count + 1;

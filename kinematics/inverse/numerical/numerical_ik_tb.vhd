@@ -32,7 +32,7 @@ begin
         generic map (
             MAX_ERR   => to_signed(16777, TOTAL_WIDTH),  -- 1 mm de tolerancia
             DELTA_VAL => to_signed(524288, TOTAL_WIDTH), -- ~0.03 rad
-            MAX_ITER  => 30
+            MAX_ITER  => 150
         )
         port map (
             clk        => clk,
@@ -104,4 +104,4 @@ end architecture sim;
 -- ghdl -a --std=08 numerical_ik.vhd           
 -- ghdl -a --std=08 numerical_ik_tb.vhd            
 -- ghdl -e --std=08 numerical_ik_tb                
--- ghdl -r --std=08 numerical_ik_tb --vcd=ondas.vcd --stop-time=50000ns
+-- ghdl -r --std=08 numerical_ik_tb --fst=ondas_fst.fst --stop-time=5000000ns
