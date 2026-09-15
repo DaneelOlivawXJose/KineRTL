@@ -102,7 +102,6 @@ end architecture sim;
 -- ghdl -a robot_config_pkg.vhd
 -- ghdl -a ../cordic/cordic.vhd
 -- ghdl -a htm_pkg.vhd 
--- ghdl -a ../mult_matrix/mult_m.vhd 
 -- ghdl -a direct_kinematics.vhd               
 -- ghdl -a direct_kinematics_tb.vhd            
 -- ghdl -e direct_kinematics_tb                

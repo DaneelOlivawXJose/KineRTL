@@ -1,0 +1,20 @@
+v 4
+file . "numerical_ik.vhd" "de2c39d93f1a2d1807113d33b80e5b07781e19e1" "20260914182907.545":
+  entity numerical_ik at 1( 0) + 0 on 19;
+  architecture behavioral of numerical_ik at 28( 820) + 0 on 20;
+file . "../../../common/matrix_ops/mult_m.vhd" "c60c1d0be8e24697c485d6553996d95cd55694ed" "20260914182839.234":
+  entity mult_m at 50( 2693) + 0 on 15;
+  architecture rtl of mult_m at 71( 3154) + 0 on 16;
+file . "../../../common/cordic/cordic.vhd" "0b4f0114f3f15aef9dac9c8d6df1ea8a8e93dbc6" "20260914182442.634":
+  entity cordic at 44( 2029) + 0 on 12;
+  architecture rtl of cordic at 66( 2554) + 0 on 13;
+file . "../../../robot_config_pkg.vhd" "b4c285ee696797fa6a9335653845786869d2f38d" "20260914183005.246":
+  package robot_config_pkg at 1( 0) + 0 on 23;
+file . "../../forward/htm_pkg.vhd" "4f0e1b0aa81cf67aba9b81e26f24b1bdf11b68c9" "20260914182519.549":
+  package htm_pkg at 1( 0) + 0 on 14;
+file . "../../forward/direct_kinematics.vhd" "00edf820420fee443e59487b5a2ae3209fea555c" "20260914182843.961":
+  entity direct_kinematics at 47( 2762) + 0 on 17;
+  architecture rtl of direct_kinematics at 74( 3597) + 0 on 18;
+file . "numerical_ik_tb.vhd" "faa7ee0a62a36ac400cd8cd0a8fc31726288fb00" "20260914182911.147":
+  entity tb_numerical_ik at 1( 0) + 0 on 21;
+  architecture sim of tb_numerical_ik at 11( 189) + 0 on 22;
