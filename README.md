@@ -1,145 +1,176 @@
-# ros2-fpga — FPGA-Accelerated N-DOF Robot Direct Kinematics
+# KineRTL — Hardware-Accelerated Robot Arm Toolkit
 
-A parameterizable VHDL implementation of the Direct Kinematics problem for an N-DOF industrial manipulator, designed to run entirely in hardware. Joint angles go in, the homogeneous transformation matrix of the end effector comes out — no soft-core CPU, no floating point unit, no external math library. Just a pipelined datapath built from CORDIC engines and a custom fixed-point matrix multiplier.
+An FPGA library for robot arm math: kinematics, trajectory generation, and everything a real-time motion controller needs, implemented as synthesizable VHDL instead of software. The goal is a growing collection of self-contained, hardware-verified building blocks that can be dropped into a robotics pipeline wherever a CPU is too slow, too unpredictable, or simply too busy to be trusted with the timing.
 
-The project was built as the compute core for a larger ROS2 + FPGA robotics pipeline, where offloading the forward kinematics chain to programmable logic removes it from the real-time constraints of a general-purpose processor.
+The project is designed to run alongside ROS2, offloading the parts of a control loop that need to happen at fixed, guaranteed intervals — like "where is the tool right now" or "what should the next setpoint be" — onto programmable logic, where the answer always arrives in the same number of clock cycles no matter what else the system is doing.
 
-## Why
+Everything in this document is either in progress or on the roadmap, listed here so the shape of the finished library is clear from the start.
 
-Direct kinematics is a small amount of math (a handful of sines, cosines, and 4×4 matrix products) but it sits on the critical path of any real-time control loop. Running it on a CPU means paying for an OS scheduler, cache misses, and a general-purpose ALU that wasn't built for this. Running it on an FPGA means the latency is deterministic, known at compile time, and independent of whatever else the system is doing.
+## Why do this on an FPGA at all?
 
-This design targets that trade-off directly: everything is fixed-point, everything is pipelined, and the amount of hardware instantiated scales automatically with the number of joints of the robot being modeled.
+A robot's control loop runs on a strict schedule, but the math behind it — trigonometry, matrix algebra, numerical iteration — is exactly the kind of workload a general-purpose CPU handles inconsistently: cache misses, OS scheduling, and shared load with everything else the system is doing all introduce jitter. None of that exists in dedicated hardware. A circuit built to compute one thing takes the same number of clock cycles every single time, which is precisely the property a real-time system needs and software struggles to guarantee.
 
-## Architecture
-
-The system is split into three cooperating modules, orchestrated by a top-level FSM.
+## Repository structure
 
 ```
-                     ┌─────────────────────────────────────────┐
-                     │           direct_kinematics              │
-                     │                                           │
-   theta_in[0..N-1]  │   ┌──────────┐  ┌──────────┐             │
-   ────────────────► │   │ CORDIC 0 │  │ CORDIC 1 │  ...        │
-                     │   └────┬─────┘  └────┬─────┘             │
-                     │        │  sin/cos     │                  │
-                     │        ▼              ▼                  │
-                     │   ┌─────────────────────────────┐        │
-                     │   │  DH matrix assembly (MULT)   │        │
-                     │   └──────────────┬───────────────┘        │
-                     │                  ▼                        │
-                     │   ┌─────────────────────────────┐        │
-                     │   │  mult_m (sequential 4x4      │        │
-   t_matrix ◄─────── │   │  accumulator, one link/iter) │        │
-   done     ◄─────── │   └─────────────────────────────┘        │
-                     └─────────────────────────────────────────┘
-```
-
-**1. Parallel CORDIC array.** One `cordic` core is instantiated per degree of freedom via a `generate` loop, so all joint angles are converted to sine/cosine simultaneously instead of one at a time. Each core runs the classic rotation-mode CORDIC algorithm with a compile-time generated arctangent lookup table (computed with `math_real` at elaboration time, not stored as a literal array).
-
-**2. DH matrix assembly.** Once every CORDIC core reports `done`, the FSM builds the individual 4×4 Denavit-Hartenberg transformation matrix for each link in a single cycle, using the corresponding `sin`/`cos` pair together with the link's `a`, `d`, and `alpha` parameters pulled from a ROM. The four possible values of `alpha` (0°, 90°, 180°, -90°) are hardcoded as an enumerated type, which avoids computing sine/cosine of the twist angle in hardware — it's known at synthesis time.
-
-**3. Sequential matrix multiplier.** `mult_m` is a small pipelined 4×4 matrix multiplier (multiply → partial sum → partial sum → writeback). The top-level FSM feeds it one link matrix per iteration, accumulating the running product into `t_matrix_reg` until all `DOF` links have been chained together. This is the only strictly sequential part of the pipeline, since each accumulation step depends on the previous one.
-
-### Fixed-point format
-
-All arithmetic uses a Qx.y signed fixed-point representation defined once in `robot_config_pkg`:
-
-| Constant | Value | Meaning |
-|---|---|---|
-| `TOTAL_WIDTH` | 32 bits | word size for angles, DH parameters, and matrix elements |
-| `FRAC_WIDTH` | 24 bits | fractional bits (Q8.24) |
-| `fp_type` | `signed(31 downto 0)` | standard fixed-point word |
-| `fp_mult_type` | `signed(63 downto 0)` | double-width word for raw multiplier outputs |
-
-Every multiplication produces a `fp_mult_type` result, which is later rescaled back down with a symmetric round-to-nearest (`+ FP_HALF_MULT` before the shift) rather than a truncation, to keep rounding error from compounding across six chained matrix products.
-
-### Robot configuration
-
-The kinematic chain is described as a table of standard DH parameters in `robot_config_pkg.vhd`:
-
-```vhdl
-constant ROBOT_ROM : dh_rom_type := (
-    0 => (a => ..., d => ..., alpha => A_90),
-    1 => (a => ..., d => ..., alpha => A_0),
-    ...
-);
-constant DOF : integer := ROBOT_ROM'length;
-```
-
-`DOF` is derived automatically from the length of the array, and every port and internal structure in `direct_kinematics` (`theta_in`, the CORDIC array, `matrix_array_dk`, etc.) is sized off that constant. Retargeting the design to a different robot means editing this one table — no changes to the datapath are required as long as the number of joints and their twist angles fit the existing types.
-
-## File structure
-
-```
-.
-├── cordic/
-│   ├── cordic.vhd            -- single-joint CORDIC sine/cosine core
-│   └── cordic_tb.vhd         -- standalone testbench
-├── mult_matrix/
-│   ├── mult_m.vhd            -- pipelined 4x4 fixed-point matrix multiplier
-│   └── mult_m_tb.vhd         -- standalone testbench
-├── direct_kinematics/
-│   ├── robot_config_pkg.vhd  -- fixed-point format + DH parameter ROM
-│   ├── htm_pkg.vhd           -- shared matrix/array type definitions
-│   ├── direct_kinematics.vhd -- top-level FSM tying everything together
-│   └── direct_kinematics_tb.vhd
+KineRTL/
+├── common/                      -- shared, robot-agnostic building blocks
+│   ├── fixed_point_pkg.vhd      -- Qx.y fixed-point types and constants
+│   ├── cordic/
+│   │   ├── cordic.vhd           -- sine/cosine core
+│   │   ├── cordic_atan2.vhd     -- (planned) angle-from-vector core
+│   │   └── cordic_sqrt.vhd      -- (planned) square-root core
+│   └── matrix_ops/
+│       ├── mult_m.vhd           -- 4x4 fixed-point matrix multiplier
+│
+├── kinematics/
+│   ├── forward/                 -- direct kinematics (IMPLEMENTED)
+│   │   ├── robot_config_pkg.vhd -- per-robot DH parameter table
+│   │   ├── htm_pkg.vhd
+│   │   ├── direct_kinematics.vhd
+│   │   └── direct_kinematics_tb.vhd
+│   ├── inverse/
+│   │   ├── analytical/          -- (planned) closed-form geometric solvers
+│   │   └── numerical/           -- (planned) Jacobian-based iterative solver
+│   └── jacobian/                -- (planned) geometric Jacobian computation
+│
+├── trajectory/
+│   ├── joint_space/             -- (planned) per-joint motion profiles
+│   └── cartesian_space/         -- (planned) tool-frame path interpolation
+│
+├── dynamics/                    -- (long-term) torque/force estimation
+│
+├── safety/                      -- (planned) joint limit & workspace guards
+│
+├── interfaces/                  -- (planned) AXI-Lite / UART bridges for ROS2
+│
 └── README.md
 ```
 
+Each module lives with its own testbench next to it, and only depends on `common/` and, where relevant, a robot-specific configuration package. The intent is that any module can be pulled out and reused on its own.
+
+## Functional modules
+
+### Forward kinematics — Implemented
+
+**What it does.** Given the current angle of every joint, computes the exact position and orientation of the robot's tool as a 4×4 homogeneous transformation matrix.
+
+**How.** One CORDIC circuit per joint computes sine and cosine of every joint angle in parallel, without any floating-point hardware. Those results are combined with the robot's physical dimensions (arm lengths, offsets, and twist angles, following the standard Denavit-Hartenberg convention) to build one small transformation matrix per joint. A dedicated 4×4 matrix multiplier then chains all of those matrices together, one joint at a time, into the final pose. Every value in the design — angles, dimensions, matrix entries — is stored as fixed-point (f.e Q8.24), not floating point, which is what keeps the hardware small and fast.
+
+**Results.** Simulated at 100 MHz against the included 6-joint configuration:
+
+| Stage | What happens | Approx. time |
+|---|---|---|
+| Sine/cosine for all joints | All CORDIC circuits run in parallel | ~270 ns |
+| Building the joint matrices | One matrix assembled per joint | ~10 ns |
+| Chaining the matrices together | 6 joints, multiplied one after another | ~495 ns |
+| Producing the final result | Widening and presenting the output | ~10 ns |
+| **Total, start to finished pose** | | **~785 ns** |
+
+That's over a million full kinematic solutions per second if run back-to-back, with identical latency every time. Positional resolution is set by the Q8.24 format at 2⁻²⁴ (roughly 6 × 10⁻⁸ of whatever unit the robot's dimensions are expressed in — sub-micrometer for the example robot included here), and the CORDIC stage keeps its own angular error below about 2⁻²⁶ radians, small enough to disappear into that same rounding. See `kinematics/forward/` for the full writeup, DH table format, and how to point the design at a different robot.
+
+### Inverse kinematics — Planned
+
+**What it will do.** The reverse problem: given a desired tool position and orientation, work out what joint angles produce it.
+
+**How it's planned to work.** Two complementary approaches:
+- **Analytical (closed-form).** For robots whose geometry allows it (e.g. a spherical wrist), the joint angles can be derived directly from trigonometric identities — fast, exact, and cheap in hardware, but specific to one kinematic structure at a time.
+- **Numerical (iterative).** For arbitrary geometries, an iterative Jacobian-based method (Newton-Raphson or damped least squares) that starts from a guess and refines it toward the target pose over a handful of pipelined iterations. This is the more general solution and the one that will make the library usable for robots that don't have a closed-form solution.
+
+Both will build directly on top of the existing forward kinematics and matrix building blocks.
+
+### Jacobian computation — Planned
+
+**What it will do.** Compute the geometric Jacobian matrix relating joint velocities to the tool's linear and angular velocity — the basis for velocity control, singularity detection, and the numerical IK solver above.
+
+**How it's planned to work.** Derived directly from the intermediate transformation matrices already produced while computing forward kinematics, so this module is designed to reuse that pipeline's output rather than recompute it from scratch. A condition-number or determinant check on the resulting Jacobian will also provide basic singularity detection.
+
+### Trajectory generation — Planned
+
+**What it will do.** Turn a start pose, an end pose, and a duration into a smooth sequence of intermediate setpoints, either per joint or along a Cartesian path.
+
+**How it's planned to work.**
+- **Joint space:** classic motion profiles — trapezoidal velocity and quintic polynomial interpolation — computed incrementally, one setpoint per control cycle, without needing to store the whole trajectory.
+- **Cartesian space:** linear interpolation of position combined with spherical interpolation (SLERP) of orientation, so the tool moves along a straight, predictable path in space rather than an arbitrary curve in joint space.
+
+### Dynamics — Long-term / exploratory
+
+**What it will do.** Estimate the joint torques required to achieve a given motion, accounting for the robot's mass distribution and the effects of gravity, inertia, and coupling between joints.
+
+**How it's planned to work.** A pipelined recursive Newton-Euler formulation, computed link by link in a manner similar to how forward kinematics chains matrices together. This is significantly more arithmetic than anything else in the library and is being treated as a longer-term goal.
+
+### Safety and limit checking — Planned
+
+**What it will do.** Continuously check computed joint angles and tool positions against configured joint limits and workspace boundaries, flagging violations before they reach the physical robot.
+
+**How it's planned to work.** Simple comparator logic running in parallel with the kinematics pipeline, so it costs no extra latency and can gate motion commands directly in hardware rather than relying on a software watchdog.
+
+### ROS2 / host interface — Planned
+
+**What it will do.** Expose these hardware modules to a ROS2 node running on a connected host, so joint states and setpoints can flow between software and the FPGA with minimal overhead.
+
+**How it's planned to work.** An AXI-Lite register interface (for SoC platforms like Zynq) and a simpler UART-based bridge (for standalone FPGA boards), both wrapping the same underlying modules so the choice of interface doesn't affect the math.
+
+### Common math core
+
+**Status:** partially implemented (CORDIC sine/cosine, 4×4 matrix multiply), with matrix inversion/transpose, `atan2`, and fixed-point square root planned as they're needed by the modules above. The intent is for every higher-level module to be built from this shared, independently-tested set of primitives rather than reimplementing fixed-point arithmetic each time.
+
+## Status overview
+
+| Module | Status |
+|---|---|
+| Forward kinematics | Implemented & verified |
+| CORDIC (sin/cos) | Implemented & verified |
+| 4×4 matrix multiplier | Implemented & verified |
+| Jacobian computation | Planned |
+| Inverse kinematics (analytical) | Planned |
+| Inverse kinematics (numerical) | Planned |
+| Trajectory generation (joint space) | Planned |
+| Trajectory generation (Cartesian space) | Planned |
+| Safety / limit checking | Planned |
+| ROS2 / host interface | Planned |
+| Dynamics (Newton-Euler) | Long-term |
+
 ## Building and simulating
 
-The project is developed and verified with [GHDL](https://ghdl.github.io/ghdl/). No vendor-specific primitives are used, so it should port to Vivado or Quartus without modification.
-
-### CORDIC core
+The project is developed and verified with [GHDL](https://ghdl.github.io/ghdl/), a free VHDL simulator. Nothing here depends on vendor-specific primitives, so it should also drop into Vivado or Quartus without changes. Every module ships next to its own testbench, following the same pattern:
 
 ```bash
-cd cordic
-ghdl -a ../direct_kinematics/robot_config_pkg.vhd
-ghdl -a cordic.vhd
-ghdl -a cordic_tb.vhd
-ghdl -e cordic_tb
-ghdl -r cordic_tb --vcd=cordic.vcd --stop-time=1000ns
-```
-
-### Matrix multiplier
-
-```bash
-cd mult_matrix
-ghdl -a ../direct_kinematics/robot_config_pkg.vhd
-ghdl -a ../direct_kinematics/htm_pkg.vhd
-ghdl -a mult_m.vhd
-ghdl -a mult_m_tb.vhd
-ghdl -e mult_m_tb
-ghdl -r mult_m_tb --vcd=mult_m.vcd --stop-time=1000ns
-```
-
-### Full direct kinematics pipeline
-
-```bash
-cd direct_kinematics
+cd kinematics/forward
 ghdl -a robot_config_pkg.vhd
-ghdl -a ../cordic/cordic.vhd
+ghdl -a ../../common/cordic/cordic.vhd
 ghdl -a htm_pkg.vhd
-ghdl -a ../mult_matrix/mult_m.vhd
+ghdl -a ../../common/matrix_ops/mult_m.vhd
 ghdl -a direct_kinematics.vhd
 ghdl -a direct_kinematics_tb.vhd
 ghdl -e direct_kinematics_tb
 ghdl -r direct_kinematics_tb --vcd=ondas.vcd --stop-time=50000ns
 ```
 
-Open the resulting `.vcd` file with GTKWave (or any waveform viewer of your choice) to inspect the internal state: `matrix_idx`, `t_matrix_reg`, and the per-link debug signals (`dbg_link_x/y/z`, `dbg_current_a/d`) are exposed specifically to make the accumulation process traceable step by step.
+Open the resulting `.vcd` file with GTKWave (or any waveform viewer) to step through the calculation. Testbenches expose extra debug signals — like which joint is currently being processed — specifically to make that easy to follow.
 
-## Results
+## Adapting forward kinematics to a different robot
 
-The included testbench exercises a 6-DOF configuration at two joint configurations: the home position (all angles at zero) and a 90° rotation of the base joint. The end-effector position converges correctly through all six sequential matrix multiplications, with the final translation vector matching the expected geometric result within the resolution of the Q8.24 format (roughly 6·10⁻⁸ in normalized units, i.e. sub-millimeter given the scale used for the DH parameters).
+Everything specific to one robot lives in `kinematics/forward/robot_config_pkg.vhd`.
 
-Latency for one full kinematics solve, from `start` to `done`, is fixed and fully deterministic: `ITERATIONS_CORDIC` cycles for the CORDIC stage, one cycle to assemble the DH matrices, and `DOF × (mult_m latency)` cycles for the sequential accumulation. With the default parameters (26 CORDIC iterations, `mult_m` at 4 cycles per matrix product, 6 DOF), a full solve completes in well under 60 clock cycles.
+1. **Update the DH table (`ROBOT_ROM`).** Replace it with the new robot's arm lengths and offsets, scaled into the same fixed-point format as the rest of the design (multiply the real value by 2²⁴ and round). The number of joints is derived automatically from the table; nothing else needs manual resizing.
+
+2. **Check the twist angles.** Only the four twist angles common to most industrial robots — 0°, 90°, 180°, -90° — are supported out of the box, since their sine and cosine are known ahead of time and hardcoded to save hardware. A different twist angle requires adding a case to `alpha_enum` and its corresponding branch in `direct_kinematics.vhd`, plus a CORDIC evaluation to supply its sine and cosine at runtime.
+
+3. **Reconsider the fixed-point format if needed.** `TOTAL_WIDTH` and `FRAC_WIDTH` control range and precision. A much larger robot may need more integer bits; a robot needing finer resolution can trade some integer range for extra fractional bits.
+
+4. **Update the testbench** with the joint configurations you want to verify.
+
+5. **Tune `ITERATIONS_CORDIC`** if you want to trade a little precision for a shorter pipeline, or vice versa.
 
 ## Design notes
 
-- **Every element of every matrix is driven in every branch.** A previous revision left one element of the DH rotation matrices unassigned across all `alpha` cases, which synthesized fine but simulated as `'U'`/`'X'` and silently propagated through the multiplier once that element reached a real operand. If you extend the `alpha_enum` or add new matrix fields, double check that all 16 elements have a driver on every path.
-- **The arctangent LUT is generated, not hand-typed.** `cordic.vhd` computes its table with a VHDL function at elaboration time using `ieee.math_real`, so changing `ITERATIONS` or `FRAC_WIDTH` regenerates correct constants automatically — there's no LUT to keep in sync by hand.
-- **Rounding is symmetric, not truncating.** Every fixed-point rescale in `direct_kinematics` adds half an LSB before shifting down. Removing that offset is a cheap way to save a few LUTs at the cost of a small systematic bias in the final pose.
+- **The CORDIC lookup table is generated, not typed in by hand.** It's computed by a VHDL function at compile time, so changing the iteration count or fixed-point format regenerates correct values automatically.
+- **Rounding is symmetric, not truncated.** Every rescale back to the standard word size adds half an LSB before shifting, which keeps small rounding errors from consistently biasing results in one direction across several chained multiplications.
+
+## Contributing
+
+The modules marked "Planned" above are open territory. If you're picking one up, keep the same conventions the existing modules follow: a self-contained VHDL entity with its own testbench, fixed-point arithmetic throughout, and no vendor-specific primitives, so it stays portable across toolchains.
 
 ## License
 
